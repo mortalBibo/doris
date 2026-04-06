@@ -197,13 +197,19 @@ Status NewJsonReader::init_reader(
     return Status::OK();
 }
 
+void NewJsonReader::set_batch_size(size_t batch_size) {
+    _batch_size = batch_size;
+}
+
 Status NewJsonReader::get_next_block(Block* block, size_t* read_rows, bool* eof) {
     if (_reader_eof) {
         *eof = true;
         return Status::OK();
     }
 
-    const int batch_size = std::max(_state->batch_size(), (int)_MIN_BATCH_SIZE);
+    const size_t batch_size =
+            _batch_size > 0 ? _batch_size
+                            : std::max(static_cast<size_t>(_state->batch_size()), _MIN_BATCH_SIZE);
 
     while (block->rows() < batch_size && !_reader_eof) {
         if (UNLIKELY(_read_json_by_line && _skip_first_line)) {

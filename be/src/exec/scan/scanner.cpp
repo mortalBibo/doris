@@ -86,14 +86,18 @@ Status Scanner::get_block_after_projects(RuntimeState* state, Block* block, bool
             _padding_block.swap(_origin_block);
         } else {
             _origin_block.clear_column_data(row_descriptor.num_materialized_slots());
-            const auto min_batch_size = std::max(state->batch_size() / 2, 1);
-            while (_padding_block.rows() < min_batch_size && !*eos) {
+            const auto min_batch_size = std::max(state->block_max_rows() / 2, 1);
+            const auto block_max_bytes = state->block_max_bytes();
+            while (_padding_block.rows() < min_batch_size &&
+                   (block_max_bytes == 0 || _padding_block.bytes() < block_max_bytes) && !*eos) {
                 RETURN_IF_ERROR(get_block(state, &_origin_block, eos));
                 if (_origin_block.rows() >= min_batch_size) {
                     break;
                 }
 
-                if (_origin_block.rows() + _padding_block.rows() <= state->batch_size()) {
+                if (_origin_block.rows() + _padding_block.rows() <= state->block_max_rows() &&
+                    (block_max_bytes == 0 ||
+                     _origin_block.bytes() + _padding_block.bytes() <= block_max_bytes)) {
                     RETURN_IF_ERROR(_merge_padding_block());
                     _origin_block.clear_column_data(row_descriptor.num_materialized_slots());
                 } else {

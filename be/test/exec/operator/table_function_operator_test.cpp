@@ -413,6 +413,8 @@ TEST_F(TableFunctionOperatorTest, block_fast_path_explode) {
 
 TEST_F(TableFunctionOperatorTest, block_fast_path_explode_batch_truncate) {
     state->batsh_size = 2;
+    state->_query_options.__set_batch_size(2);
+    state->_query_options.__set_preferred_block_size_rows(2);
     bool get_value_called = false;
     auto int_type = std::make_shared<DataTypeInt32>();
     auto arr_type = std::make_shared<DataTypeArray>(int_type);
@@ -656,6 +658,8 @@ TEST_F(TableFunctionOperatorTest, block_fast_path_explode_nullable_array_misalig
 TEST_F(TableFunctionOperatorTest,
        block_fast_path_explode_nullable_array_partial_gap_uses_slow_path) {
     state->batsh_size = 2;
+    state->_query_options.__set_batch_size(2);
+    state->_query_options.__set_preferred_block_size_rows(2);
     bool get_value_called = false;
     auto int_type = std::make_shared<DataTypeInt32>();
     auto arr_type = std::make_shared<DataTypeNullable>(std::make_shared<DataTypeArray>(int_type));

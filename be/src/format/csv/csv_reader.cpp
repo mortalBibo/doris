@@ -307,6 +307,10 @@ Status CsvReader::init_reader(bool is_load) {
     return Status::OK();
 }
 
+void CsvReader::set_batch_size(size_t batch_size) {
+    _batch_size = batch_size;
+}
+
 // !FIXME: Here we should use MutableBlock
 Status CsvReader::get_next_block(Block* block, size_t* read_rows, bool* eof) {
     if (_line_reader_eof) {
@@ -314,7 +318,9 @@ Status CsvReader::get_next_block(Block* block, size_t* read_rows, bool* eof) {
         return Status::OK();
     }
 
-    const int batch_size = std::max(_state->batch_size(), (int)_MIN_BATCH_SIZE);
+    const size_t batch_size =
+            _batch_size > 0 ? _batch_size
+                            : std::max(static_cast<size_t>(_state->batch_size()), _MIN_BATCH_SIZE);
     size_t rows = 0;
 
     bool success = false;

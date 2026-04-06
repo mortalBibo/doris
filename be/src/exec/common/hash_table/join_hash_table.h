@@ -100,22 +100,28 @@ public:
         _keep_null_key = keep_null_key;
     }
 
+    // batch_size_limit: when > 0, overrides max_batch_size for this call only (thread-safe).
     template <int JoinOpType>
     auto find_batch(const Key* __restrict keys, const uint32_t* __restrict build_idx_map,
                     int probe_idx, uint32_t build_idx, int probe_rows,
                     uint32_t* __restrict probe_idxs, bool& probe_visited,
                     uint32_t* __restrict build_idxs, const uint8_t* null_map,
-                    bool with_other_conjuncts, bool is_mark_join, bool has_mark_join_conjunct) {
+                    bool with_other_conjuncts, bool is_mark_join, bool has_mark_join_conjunct,
+                    int batch_size_limit = 0) {
+        const int effective_batch_size =
+                batch_size_limit > 0 ? batch_size_limit : max_batch_size;
+
         if ((JoinOpType == TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN ||
              JoinOpType == TJoinOp::NULL_AWARE_LEFT_SEMI_JOIN) &&
             _empty_build_side) {
             return _process_null_aware_left_half_join_for_empty_build_side<JoinOpType>(
-                    probe_idx, probe_rows, probe_idxs, build_idxs);
+                    probe_idx, probe_rows, probe_idxs, build_idxs, effective_batch_size);
         }
 
         if (with_other_conjuncts) {
             return _find_batch_conjunct<JoinOpType, false>(
-                    keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs);
+                    keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs,
+                    effective_batch_size);
         }
 
         if (is_mark_join) {
@@ -131,18 +137,20 @@ public:
             if (is_null_aware_join || (is_left_half_join && !has_mark_join_conjunct)) {
                 return _find_batch_conjunct<JoinOpType, true>(keys, build_idx_map, probe_idx,
                                                               build_idx, probe_rows, probe_idxs,
-                                                              build_idxs);
+                                                              build_idxs, effective_batch_size);
             }
 
             return _find_batch_conjunct<JoinOpType, false>(
-                    keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs);
+                    keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs,
+                    effective_batch_size);
         }
 
         if (JoinOpType == TJoinOp::INNER_JOIN || JoinOpType == TJoinOp::FULL_OUTER_JOIN ||
             JoinOpType == TJoinOp::LEFT_OUTER_JOIN || JoinOpType == TJoinOp::RIGHT_OUTER_JOIN) {
             return _find_batch_inner_outer_join<JoinOpType>(keys, build_idx_map, probe_idx,
                                                             build_idx, probe_rows, probe_idxs,
-                                                            probe_visited, build_idxs);
+                                                            probe_visited, build_idxs,
+                                                            effective_batch_size);
         }
         // ASOF JOIN: for each probe row, find one matching build row (the closest match)
         // The actual closest match logic is handled in ProcessHashTableProbe
@@ -150,16 +158,19 @@ public:
             JoinOpType == TJoinOp::ASOF_LEFT_OUTER_JOIN) {
             // Use conjunct path to get all matching rows, then filter in ProcessHashTableProbe
             return _find_batch_conjunct<JoinOpType, false>(
-                    keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs);
+                    keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs,
+                    effective_batch_size);
         }
         if (JoinOpType == TJoinOp::LEFT_ANTI_JOIN || JoinOpType == TJoinOp::LEFT_SEMI_JOIN ||
             JoinOpType == TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN) {
             if (null_map) {
                 return _find_batch_left_semi_anti<JoinOpType, true>(
-                        keys, build_idx_map, probe_idx, probe_rows, probe_idxs, null_map);
+                        keys, build_idx_map, probe_idx, probe_rows, probe_idxs, null_map,
+                        effective_batch_size);
             } else {
                 return _find_batch_left_semi_anti<JoinOpType, false>(
-                        keys, build_idx_map, probe_idx, probe_rows, probe_idxs, nullptr);
+                        keys, build_idx_map, probe_idx, probe_rows, probe_idxs, nullptr,
+                        effective_batch_size);
             }
         }
         if (JoinOpType == TJoinOp::RIGHT_ANTI_JOIN || JoinOpType == TJoinOp::RIGHT_SEMI_JOIN) {
@@ -185,15 +196,18 @@ public:
                                               uint32_t* __restrict probe_idxs,
                                               uint32_t* __restrict build_idxs,
                                               uint8_t* __restrict null_flags,
-                                              bool picking_null_keys, const uint8_t* null_map) {
+                                              bool picking_null_keys, const uint8_t* null_map,
+                                              int batch_size_limit = 0) {
+        const int effective_batch_size =
+                batch_size_limit > 0 ? batch_size_limit : max_batch_size;
         if (null_map) {
             return _find_null_aware_with_other_conjuncts_impl<true>(
                     keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs,
-                    null_flags, picking_null_keys, null_map);
+                    null_flags, picking_null_keys, null_map, effective_batch_size);
         } else {
             return _find_null_aware_with_other_conjuncts_impl<false>(
                     keys, build_idx_map, probe_idx, build_idx, probe_rows, probe_idxs, build_idxs,
-                    null_flags, picking_null_keys, nullptr);
+                    null_flags, picking_null_keys, nullptr, effective_batch_size);
         }
     }
 
@@ -245,7 +259,8 @@ private:
     template <int JoinOpType>
     auto _process_null_aware_left_half_join_for_empty_build_side(int probe_idx, int probe_rows,
                                                                  uint32_t* __restrict probe_idxs,
-                                                                 uint32_t* __restrict build_idxs) {
+                                                                 uint32_t* __restrict build_idxs,
+                                                                 int effective_batch_size) {
         if (JoinOpType != TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN &&
             JoinOpType != TJoinOp::NULL_AWARE_LEFT_SEMI_JOIN) {
             throw Exception(ErrorCode::INTERNAL_ERROR,
@@ -253,7 +268,7 @@ private:
                             "hash join input");
         }
         uint32_t matched_cnt = 0;
-        const auto batch_size = max_batch_size;
+        const auto batch_size = effective_batch_size;
 
         while (probe_idx < probe_rows && matched_cnt < batch_size) {
             probe_idxs[matched_cnt] = probe_idx++;
@@ -294,9 +309,9 @@ private:
     auto _find_batch_left_semi_anti(const Key* __restrict keys,
                                     const uint32_t* __restrict build_idx_map, int probe_idx,
                                     int probe_rows, uint32_t* __restrict probe_idxs,
-                                    const uint8_t* null_map) {
+                                    const uint8_t* null_map, int effective_batch_size) {
         uint32_t matched_cnt = 0;
-        const auto batch_size = max_batch_size;
+        const auto batch_size = effective_batch_size;
 
         while (probe_idx < probe_rows && matched_cnt < batch_size) {
             if constexpr (JoinOpType == TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN && has_null_map) {
@@ -321,9 +336,10 @@ private:
     template <int JoinOpType, bool only_need_to_match_one>
     auto _find_batch_conjunct(const Key* __restrict keys, const uint32_t* __restrict build_idx_map,
                               int probe_idx, uint32_t build_idx, int probe_rows,
-                              uint32_t* __restrict probe_idxs, uint32_t* __restrict build_idxs) {
+                              uint32_t* __restrict probe_idxs, uint32_t* __restrict build_idxs,
+                              int effective_batch_size) {
         uint32_t matched_cnt = 0;
-        const auto batch_size = max_batch_size;
+        const auto batch_size = effective_batch_size;
 
         auto do_the_probe = [&]() {
             while (build_idx && matched_cnt < batch_size) {
@@ -376,9 +392,10 @@ private:
                                       const uint32_t* __restrict build_idx_map, int probe_idx,
                                       uint32_t build_idx, int probe_rows,
                                       uint32_t* __restrict probe_idxs, bool& probe_visited,
-                                      uint32_t* __restrict build_idxs) {
+                                      uint32_t* __restrict build_idxs,
+                                      int effective_batch_size) {
         uint32_t matched_cnt = 0;
-        const auto batch_size = max_batch_size;
+        const auto batch_size = effective_batch_size;
 
         auto do_the_probe = [&]() {
             while (build_idx && matched_cnt < batch_size) {
@@ -430,9 +447,9 @@ private:
             const Key* __restrict keys, const uint32_t* __restrict build_idx_map, int probe_idx,
             uint32_t build_idx, int probe_rows, uint32_t* __restrict probe_idxs,
             uint32_t* __restrict build_idxs, uint8_t* __restrict null_flags, bool picking_null_keys,
-            const uint8_t* null_map) {
+            const uint8_t* null_map, int effective_batch_size) {
         uint32_t matched_cnt = 0;
-        const auto batch_size = max_batch_size;
+        const auto batch_size = effective_batch_size;
 
         auto do_the_probe = [&]() {
             /// If no any rows match the probe key, here start to handle null keys in build side.
